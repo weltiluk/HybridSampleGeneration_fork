@@ -146,6 +146,42 @@ class HybridVAEBase(nn.Module, ABC):
             return (torch.as_tensor(batch),)
         return (batch,)
 
+    def _prepare_mask_like(self, mask: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        mask = mask.to(device=ref.device, dtype=ref.dtype)
+        spatial_dims = ref.ndim - 2
+
+        if mask.ndim == ref.ndim - 1:
+            mask = mask.unsqueeze(1)
+        if mask.ndim != ref.ndim:
+            raise ValueError(
+                f"Expected mask shape (B,H,W)/(B,D,H,W) or (B,C,...), got {tuple(mask.shape)} "
+                f"for recon shape {tuple(ref.shape)}."
+            )
+        if mask.shape[0] != ref.shape[0]:
+            raise ValueError(
+                f"Expected mask batch size {ref.shape[0]}, got {mask.shape[0]} for mask shape {tuple(mask.shape)}."
+            )
+
+        if mask.shape[1] > 1:
+            mask = torch.amax(mask, dim=1, keepdim=True)    # binary foreground mask from one-hot
+        elif mask.shape[1] != 1:
+            raise ValueError(f"Expected at least one mask channel, got mask shape {tuple(mask.shape)}.")
+
+        if tuple(mask.shape[-spatial_dims:]) != tuple(ref.shape[-spatial_dims:]):
+            mask = F.interpolate(mask, size=ref.shape[-spatial_dims:], mode="nearest")
+
+        if ref.shape[1] != 1:
+            mask = mask.expand(mask.shape[0], ref.shape[1], *mask.shape[2:])
+
+        return (mask > 0).to(dtype=ref.dtype)
+
+    def _smooth_l1_per_element(self, recon: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        beta = float(self.cfg.recon_smoothl1_beta)
+        try:
+            return F.smooth_l1_loss(recon, x, reduction="none", beta=beta)
+        except TypeError:
+            return F.smooth_l1_loss(recon, x, reduction="none")
+
     def save_checkpoint(self, path: str, **_state) -> None:
         torch.save(self.state_dict(), path)
 
@@ -172,18 +208,28 @@ class HybridVAEBase(nn.Module, ABC):
         mu, logvar = out["mu"], out["logvar"]
 
         loss_name = str(self.cfg.recon_loss).lower()
+        outside_loss = recon.new_tensor(0.0)
+        outside_weighted = recon.new_tensor(0.0)
         if loss_name in ("smoothl1", "smooth_l1", "huber"):
-            beta = float(self.cfg.recon_smoothl1_beta)
-            try:
-                recon_per_element = F.smooth_l1_loss(recon, x, reduction="none", beta=beta)
-            except TypeError:
-                recon_per_element = F.smooth_l1_loss(recon, x, reduction="none")
+            recon_per_element = self._smooth_l1_per_element(recon, x)
+        elif loss_name in ("smoothl1_masked", "smooth_l1_masked", "masked"):
+            recon_per_element = self._smooth_l1_per_element(recon, x)
+            if "mask" not in out or out["mask"] is None:
+                raise ValueError(
+                    "cfg.recon_loss='smoothl1_masked' requires the model forward output to include 'mask'. "
+                    "This loss is intended for conditional VAE models."
+                )
+            mask = self._prepare_mask_like(out["mask"], recon)
+            outside = 1.0 - mask
+            outside_eps = float(getattr(self.cfg, "smoothl1_masked_eps", 1e-8))
+            outside_loss = (outside * recon.abs()).sum() / (outside.sum() + outside_eps)
+            outside_weighted = float(getattr(self.cfg, "smoothl1_masked_lambda", 0.0)) * outside_loss
         elif loss_name in ("mse", "l2"):
             recon_per_element = (recon - x) ** 2
         else:
             raise ValueError(
                 f"Unknown cfg.recon_loss={self.cfg.recon_loss!r}. "
-                "Supported: 'smoothl1' | 'mse'"
+                "Supported: 'smoothl1' | 'smoothl1_masked' | 'mse'"
             )
 
         fg_weight = float(self.cfg.fg_weight)
@@ -206,15 +252,17 @@ class HybridVAEBase(nn.Module, ABC):
 
         recon_weighted = self.cfg.recon_weight * recon_loss
         kl_weighted = self.cfg.beta_kl * kl_used
-        total = recon_weighted + kl_weighted
+        total = recon_weighted + kl_weighted + outside_weighted
 
         return {
             "total": total,
             "recon": recon_loss,
             "kl": kl_used,
             "kl_raw": kl_raw,
+            "outside": outside_loss,
             "recon_weighted": recon_weighted,
             "kl_weighted": kl_weighted,
+            "outside_weighted": outside_weighted,
         }
 
     @abstractmethod

@@ -424,8 +424,10 @@ class Config:
     beta_kl_warmup_start: float = 0
     beta_kl_warmup_epochs: int = 100
     free_bits: float = 0.0
-    recon_loss: str = "smoothl1"  # 'smoothl1' or 'mse'
+    recon_loss: str = "smoothl1_masked"  # 'smoothl1' or 'mse'
     recon_smoothl1_beta: float = 1.0
+    smoothl1_masked_lambda: float = 1.0
+    smoothl1_masked_eps: float = 1e-8
     use_transpose_conv: bool = True
     fg_weight: float = 1.0
     fg_threshold: float = 0.0
@@ -544,8 +546,9 @@ class ConvNeXtcVAE3D(HybridVAEBase):
         # Crop recon back to original spatial size
         recon = self._crop_like(recon, ref_dhw)
         x_ref = self._crop_like(x_pad, ref_dhw) if sum(pad) else x
+        mask_ref = self._crop_like(tgt_mask_pad, ref_dhw) if sum(pad) else tgt_mask
 
-        return {"recon": recon, "mu": mu, "logvar": logvar, "x_ref": x_ref}
+        return {"recon": recon, "mu": mu, "logvar": logvar, "x_ref": x_ref, "mask": mask_ref}
 
     def _extract_inputs(self, batch) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Extract x and ori_mask from batch; tgt_mask is optional for generation-only use."""
