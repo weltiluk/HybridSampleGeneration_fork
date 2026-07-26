@@ -560,10 +560,12 @@ class OutlierGUI:
                 del self.metric_map[m][control][anomaly]
 
     def _delete_files_for_anomaly(self, control, anomaly):
+        variant_meta = self.anomaly_transformations[os.path.basename(str(anomaly))]
+        source_anomaly = os.path.basename(str(variant_meta["source_anomaly"]))
         targets = [
             os.path.join(self.synth_roi_dir, control, anomaly),
-            os.path.join(self.anomaly_dir, anomaly),
-            os.path.join(self.anomaly_roi_dir, anomaly),
+            os.path.join(self.anomaly_dir, source_anomaly),
+            os.path.join(self.anomaly_roi_dir, source_anomaly),
             os.path.join(self.synth_anomaly_dir, anomaly)
         ]
         for path in targets:
@@ -621,8 +623,10 @@ class OutlierGUI:
                 deleted_anything = True
 
             if var_real.get():
-                self._remove_if_exists(os.path.join(self.anomaly_dir, anomaly))
-                self._remove_if_exists(os.path.join(self.anomaly_roi_dir, anomaly))
+                variant_meta = self.anomaly_transformations[os.path.basename(str(anomaly))]
+                source_anomaly = os.path.basename(str(variant_meta["source_anomaly"]))
+                self._remove_if_exists(os.path.join(self.anomaly_dir, source_anomaly))
+                self._remove_if_exists(os.path.join(self.anomaly_roi_dir, source_anomaly))
                 deleted_anything = True
 
             if var_synth_roi.get():
@@ -714,8 +718,12 @@ class OutlierGUI:
             _, control, anomaly = item
             self.fig.suptitle(f"{anomaly} in {control}", fontsize=12, fontweight='bold')
 
-            anomaly_meta = _get_anomaly_meta(self.anomaly_transformations, anomaly) or {}
-            source_anomaly = os.path.basename(str(anomaly_meta.get("source_anomaly", anomaly)))
+            variant_meta = self.anomaly_transformations[os.path.basename(str(anomaly))]
+            source_anomaly = os.path.basename(str(variant_meta["source_anomaly"]))
+            anomaly_meta = {
+                **self.anomaly_transformations[source_anomaly],
+                **variant_meta,
+            }
             synth_roi_path = os.path.join(self.synth_roi_dir, control, anomaly)
             synth_roi_mask_path = self._get_fallback_path(os.path.join(self.synth_roi_mask_dir, control), anomaly)
             real_roi_path = os.path.join(self.anomaly_roi_dir, source_anomaly)
@@ -954,16 +962,6 @@ def _load_anomaly_transformations(transformations_file: str) -> Dict[str, dict]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
-
-
-def _get_anomaly_meta(transformations: Dict[str, dict], filename: str) -> Optional[dict]:
-    base = os.path.basename(str(filename or ""))
-    stem, _ = os.path.splitext(base)
-    for key in (base, stem, stem + ".npy"):
-        meta = transformations.get(key)
-        if isinstance(meta, dict):
-            return meta
-    return None
 
 
 def _denormalize_array_for_display(arr: np.ndarray, meta: Optional[dict]) -> Tuple[np.ndarray, bool]:
@@ -1915,7 +1913,7 @@ class AnomalyGenerationTab(_ArrayTabBase):
     def refresh_files(self):
         # Synthetic outputs are the primary entities in this tab. A real
         # anomaly may have no same-named synthetic file when outputs-per-class
-        # creates only ``__variant_NNN`` files.
+        # creates only ``_variantNNN`` files.
         self.anomaly_transformations = _load_anomaly_transformations(
             self.paths.anomaly_transformations_file
         )
@@ -1940,8 +1938,12 @@ class AnomalyGenerationTab(_ArrayTabBase):
             ]
             self.fig.suptitle("anomaly generation", fontsize=13, fontweight="bold")
         else:
-            anomaly_meta = _get_anomaly_meta(self.anomaly_transformations, selected) or {}
-            source_anomaly = os.path.basename(str(anomaly_meta.get("source_anomaly", selected)))
+            variant_meta = self.anomaly_transformations[os.path.basename(str(selected))]
+            source_anomaly = os.path.basename(str(variant_meta["source_anomaly"]))
+            anomaly_meta = {
+                **self.anomaly_transformations[source_anomaly],
+                **variant_meta,
+            }
             anomaly_path, anomaly_expected = _resolve_file_by_name(self.anomaly_dir, source_anomaly)
             roi_path, roi_expected = _resolve_file_by_name(self.anomaly_roi_dir, source_anomaly)
             extracted_mask_path, extracted_mask_expected = _resolve_file_by_name(self.extracted_mask_dir, source_anomaly)
