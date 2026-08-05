@@ -805,9 +805,19 @@ def _get_alpha_mask_3d(anomaly_arr, config, valid_mask):
     if not np.any(final_clean_mask):
         return alpha_mask
 
+    if not config["blend_depth"]:
+        for depth in range(final_clean_mask.shape[0]):
+            clean_slice = final_clean_mask[depth, :, :]
+            if np.any(clean_slice):
+                alpha_mask[depth, :, :] = _distance_alpha(
+                    clean_slice, max_alpha, sq, steepness_factor, config
+                )
+        return alpha_mask
+
     depth_weight = float(config["depth_weight"])
     if depth_weight <= 0:
-        raise ValueError("depth_weight must be greater than 0")
+        raise ValueError("depth_weight must be greater than 0 when blend_depth is enabled")
+
     return _distance_alpha(
         final_clean_mask,
         max_alpha,
