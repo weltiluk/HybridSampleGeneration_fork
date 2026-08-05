@@ -18,6 +18,7 @@ class Config:
     sq: float = 2
     steepness_factor: float = 3
     upsampling_factor: int = 2
+    depth_weight: float = 1.0   # 3D only: <1 strengthens depth falloff, >1 weakens it; 1 weights all axes equally.
     sobel_threshold: float = 0.05
     dilation_size: int = 2
     shave_pixels: int = 1

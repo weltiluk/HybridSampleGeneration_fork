@@ -776,35 +776,46 @@ def _get_alpha_mask_2d(anomaly_arr, config, valid_mask):
 
 def _get_alpha_mask_3d(anomaly_arr, config, valid_mask):
     """
-    Build a per-slice alpha blending mask for a 3D anomaly volume.
+    Build a volumetric alpha blending mask for a 3D anomaly volume.
 
-    The mask is computed slice-by-slice along the first spatial axis
-    (assumed to be D), using the same edge-aware distance-transform logic
-    as the 2D path.
+    The support can still be cleaned slice-by-slice when the optional Sobel
+    path is enabled, but the distance transform is evaluated once in 3D.
+    Consequently, boundaries along depth contribute to the alpha falloff in
+    the same way as boundaries along height and width.
     """
     max_alpha, sq, steepness_factor = _sample_alpha_params(config)
 
     # Initialize alpha mask volume.
     alpha_mask = np.zeros_like(anomaly_arr, dtype=np.float32)
 
-    # Iterate through slices along D.
-    for depth in range(anomaly_arr.shape[0]):
-        valid_slice = valid_mask[depth, :, :]
+    if not np.any(valid_mask > 0):
+        return alpha_mask
 
-        # Skip slices with no foreground content.
-        if not np.any(valid_slice > 0):
-            continue
+    if config.get("fusion_use_sobel_for_alpha_mask", False):
+        final_clean_mask = np.zeros_like(valid_mask, dtype=bool)
+        for depth in range(anomaly_arr.shape[0]):
+            valid_slice = valid_mask[depth, :, :]
+            if not np.any(valid_slice > 0):
+                continue
+            clean_slice = _clean_edge_mask(anomaly_arr[depth, :, :], valid_slice, config)
+            final_clean_mask[depth, :, :] = clean_slice
+    else:
+        final_clean_mask = valid_mask > 0
 
-        if config.get("fusion_use_sobel_for_alpha_mask", False):
-            final_clean_mask = _clean_edge_mask(anomaly_arr[depth, :, :], valid_slice, config)
-        else:
-            final_clean_mask = valid_slice > 0
-        if not np.any(final_clean_mask):
-            continue
+    if not np.any(final_clean_mask):
+        return alpha_mask
 
-        alpha_mask[depth, :, :] = _distance_alpha(final_clean_mask, max_alpha, sq, steepness_factor, config)
-
-    return alpha_mask
+    depth_weight = float(config["depth_weight"])
+    if depth_weight <= 0:
+        raise ValueError("depth_weight must be greater than 0")
+    return _distance_alpha(
+        final_clean_mask,
+        max_alpha,
+        sq,
+        steepness_factor,
+        config,
+        sampling=(depth_weight, 1.0, 1.0),
+    )
 
 
 def _clean_edge_mask(slice_img, valid_mask, config):
@@ -867,7 +878,7 @@ def _clean_edge_mask(slice_img, valid_mask, config):
     return clean_mask
 
 
-def _distance_alpha(clean_mask, max_alpha, sq, steepness_factor, config):
+def _distance_alpha(clean_mask, max_alpha, sq, steepness_factor, config, sampling=None):
     """Create smooth interior alpha weights from a clean binary support mask."""
     # ------------------------------------------------------------
     # 4) Distance transform to create smooth interior weights.
@@ -876,10 +887,10 @@ def _distance_alpha(clean_mask, max_alpha, sq, steepness_factor, config):
     if upsampling_factor > 1:
         # Upsample mask for smoother distance transform, then downsample.
         large_mask = scipy.ndimage.zoom(clean_mask, upsampling_factor, order=0)
-        large_dist = scipy.ndimage.distance_transform_edt(large_mask)
+        large_dist = scipy.ndimage.distance_transform_edt(large_mask, sampling=sampling)
         dist_map = scipy.ndimage.zoom(large_dist, 1 / upsampling_factor, order=1)
     else:
-        dist_map = scipy.ndimage.distance_transform_edt(clean_mask)
+        dist_map = scipy.ndimage.distance_transform_edt(clean_mask, sampling=sampling)
 
     # Normalize to [0, 1].
     current_max = dist_map.max()
