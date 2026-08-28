@@ -691,7 +691,6 @@ def interpolate_masked_regions(
     result[:, transformed_foreground] = normalized_foreground[:, transformed_foreground]
     return result.astype(image_np.dtype, copy=False)
 
-
 def _fit_image_like_mask(image_np, transformed_mask, target_shape, image_interpolation_order):
     """Mirror _fit_mask_to_spatial_shape for a channel-first image."""
     target_shape = np.asarray(target_shape, dtype=int)
@@ -772,7 +771,11 @@ class TransformGenerator:
             ),
             output_count=getattr(transform_config, "output_count", 1),
             class_output_counts=getattr(transform_config, "class_output_counts", None),
-            transform_image_for_posterior_generation=getattr(transform_config, "transform_image_for_posterior_generation", True),
+            use_transformed_skips_for_posterior_generation=getattr(
+                transform_config,
+                "use_transformed_skips_for_posterior_generation",
+                True,
+            ),
             image_interpolation_order=getattr(transform_config, "image_interpolation_order", 1),
         )
 
@@ -784,7 +787,7 @@ class TransformGenerator:
         priorities: list[int] | tuple[int, ...] | None = None
         rng: np.random.Generator | None = None
         local_as_global: bool = False
-        transform_image_for_posterior_generation: bool = True
+        use_transformed_skips_for_posterior_generation: bool = True
         image_interpolation_order: int = 1
         padding_factor: int = 2
         output_count: int = 1
@@ -861,7 +864,7 @@ class TransformGenerator:
         mask_transform_local_as_global: bool = False,
         output_count: int = 1,
         class_output_counts: Dict[int, int] | None = None,
-        transform_image_for_posterior_generation: bool = True,
+        use_transformed_skips_for_posterior_generation: bool = True,
         image_interpolation_order: int = 1,
     ) -> None:
         self.global_transform_probs = {}
@@ -882,7 +885,7 @@ class TransformGenerator:
         self.rng = rng if rng is not None else np.random.default_rng()
         self.background_threshold = background_threshold
         self.mask_transform_local_as_global = mask_transform_local_as_global
-        self.transform_image_for_posterior_generation = transform_image_for_posterior_generation
+        self.use_transformed_skips_for_posterior_generation = use_transformed_skips_for_posterior_generation
         self.image_interpolation_order = image_interpolation_order
         self.output_count = _validate_output_count(output_count)
         self.class_output_counts = {

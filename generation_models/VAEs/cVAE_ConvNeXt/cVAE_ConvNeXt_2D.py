@@ -617,13 +617,12 @@ class ConvNeXtcVAE2D(HybridVAEBase):
         if original_mask is None:
             raise ValueError("original_mask is required for conditional generation.")
         
-        ori_x = x
         transformed_x = None
         ori_mask = torch.as_tensor(original_mask)
         if target_mask is None and target_mask_generator is not None:
-            if target_mask_generator.transform_image_for_posterior_generation:
+            if target_mask_generator.use_transformed_skips_for_posterior_generation:
                 target_mask, transformed_x = target_mask_generator.create_target_mask_and_transformed_image(
-                    original_mask, ori_x)
+                    original_mask, x)
             else:
                 target_mask = target_mask_generator.create_target_mask(
                     original_mask=original_mask, conditional=True)
@@ -635,20 +634,20 @@ class ConvNeXtcVAE2D(HybridVAEBase):
         tgt_mask_return = tgt_mask
 
         single = False
-        if ori_x.ndim == 3:
-            ori_x = ori_x.unsqueeze(0)  # (1,C,H,W)
+        if x.ndim == 3:
+            x = x.unsqueeze(0)  # (1,C,H,W)
             if transformed_x is not None:
                 transformed_x = transformed_x.unsqueeze(0)
             single = True
-        elif ori_x.ndim != 4:
-            raise ValueError(f"Expected (C,H,W) or (B,C,H,W), got {tuple(ori_x.shape)}")
+        elif x.ndim != 4:
+            raise ValueError(f"Expected (C,H,W) or (B,C,H,W), got {tuple(x.shape)}")
 
         if clamp_01:
-            ori_x = ori_x.clamp(0.0, 1.0)
+            x = x.clamp(0.0, 1.0)
             if transformed_x is not None:
                 transformed_x = transformed_x.clamp(0.0, 1.0)
 
-        ori_x = ori_x.to(device)
+        x = x.to(device)
         if transformed_x is not None:
             transformed_x = transformed_x.to(device)
         
@@ -656,9 +655,9 @@ class ConvNeXtcVAE2D(HybridVAEBase):
         tgt_mask = to_one_hot_2D(tgt_mask.to(device), self.cfg.num_anomaly_classes)
 
         with torch.no_grad():
-            ref_hw = tuple(ori_x.shape[-2:])
+            ref_hw = tuple(x.shape[-2:])
             multiple = 2 ** self.cfg.n_levels
-            x_pad, pad = self._pad_to_multiple(ori_x, multiple)
+            x_pad, pad = self._pad_to_multiple(x, multiple)
             if sum(pad) > 0:
                 ori_mask_pad = F.pad(ori_mask, pad, mode="constant", value=0.0)
                 tgt_mask_pad = F.pad(tgt_mask, pad, mode="constant", value=0.0)
@@ -675,7 +674,7 @@ class ConvNeXtcVAE2D(HybridVAEBase):
             latent_hw = tuple(h.shape[-2:])
             model._ensure_fcs(latent_hw, device)
 
-            B = ori_x.shape[0]
+            B = x.shape[0]
             h_flat = h.reshape(B, -1)
             mu = model.fc_mu(h_flat)
             logvar = model.fc_logvar(h_flat)
