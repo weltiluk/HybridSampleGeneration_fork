@@ -1,3 +1,4 @@
+import csv
 import os
 import optuna
 import torch
@@ -294,13 +295,23 @@ def objective(trial: Trial, config: Configuration, dataset):
     os.makedirs(directory, exist_ok=True)
     best_model_path = os.path.join(directory, f"model_trial_{trial.number}_best.pth")
 
+    metrics_log_path = os.path.join(
+        config.get_paths().study_folder,
+        "training_logs",
+        f"trial_{trial.number}_metrics.csv",
+    )
+    epoch_metrics = []
     train_losses, val_losses, best_epoch, best_val = train(
         model=model,
         train_loader=_anomaly_train_loader,
         val_loader=_anomaly_val_loader,
         config=config,
         best_model_path=best_model_path,
+        trial=trial,
+        epoch_metrics=epoch_metrics,
+        metrics_log_path=metrics_log_path,
     )
+    _write_epoch_metrics_csv(metrics_log_path, epoch_metrics)
 
     for key, value in params.items():
         trial.set_user_attr(key, value)
@@ -310,6 +321,12 @@ def objective(trial: Trial, config: Configuration, dataset):
     trial.set_user_attr("model_path", model_path)
     trial.set_user_attr("best_epoch", best_epoch)
     trial.set_user_attr("best_val_loss", float(best_val))
+    trial.set_user_attr("metrics_log_path", metrics_log_path)
+    if epoch_metrics:
+        best_metrics = epoch_metrics[max(0, best_epoch - 1)]
+        final_metrics = epoch_metrics[-1]
+        _set_trial_metric_attrs(trial, "best", best_metrics)
+        _set_trial_metric_attrs(trial, "final", final_metrics)
     trial.set_user_attr("params", params)
     trial.set_user_attr("model_name", config.model_name)
 
@@ -545,7 +562,64 @@ def _run_epoch(model, loader, optimizer, config, device, *, training: bool) -> d
     return _average_metric_dicts(metric_dicts)
 
 
-def train(model, train_loader, val_loader, config, *, best_model_path=None):
+def _build_epoch_metrics_row(*, epoch, learning_rate, model, train_metrics, val_metrics):
+    row = {
+        "epoch": int(epoch),
+        "learning_rate": float(learning_rate),
+    }
+    cfg = getattr(model, "cfg", None)
+    if cfg is not None and hasattr(cfg, "beta_kl"):
+        row["beta_kl"] = float(cfg.beta_kl)
+
+    for split, metrics in (("train", train_metrics), ("val", val_metrics)):
+        for key, value in metrics.items():
+            row[f"{split}_{key}"] = float(value)
+
+        bottleneck_dim = getattr(cfg, "bottleneck_dim", None) if cfg is not None else None
+        kl_raw = metrics.get("kl_raw")
+        if kl_raw is not None and bottleneck_dim:
+            row[f"{split}_kl_per_dim"] = float(kl_raw) / float(bottleneck_dim)
+
+        kl_weighted = metrics.get("kl_weighted")
+        recon_weighted = metrics.get("recon_weighted")
+        if kl_weighted is not None and recon_weighted not in (None, 0.0):
+            row[f"{split}_kl_recon_ratio"] = float(kl_weighted) / float(recon_weighted)
+
+    return row
+
+
+def _write_epoch_metrics_csv(path, rows):
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fieldnames = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _set_trial_metric_attrs(trial, prefix, metrics):
+    for key, value in metrics.items():
+        if isinstance(value, (int, float)):
+            trial.set_user_attr(f"{prefix}_{key}", value)
+
+
+def train(
+    model,
+    train_loader,
+    val_loader,
+    config,
+    *,
+    best_model_path=None,
+    trial=None,
+    epoch_metrics=None,
+    metrics_log_path=None,
+):
     """
     Train a model through the TrainableModule batch-level interface.
 
@@ -616,6 +690,20 @@ def train(model, train_loader, val_loader, config, *, best_model_path=None):
                     )
 
             lr = _current_lr(optimizer, scheduler)
+            metrics_row = _build_epoch_metrics_row(
+                epoch=epoch + 1,
+                learning_rate=lr,
+                model=model,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+            )
+            if epoch_metrics is not None:
+                epoch_metrics.append(metrics_row)
+                if metrics_log_path is not None:
+                    _write_epoch_metrics_csv(metrics_log_path, epoch_metrics)
+            if trial is not None:
+                trial.report(float(val_value), step=epoch + 1)
+
             tqdm.write(_format_epoch_log(epoch + 1, lr, train_metrics, val_metrics))
             pbar_outer.set_postfix(
                 lr=f"{lr:.5f}",
